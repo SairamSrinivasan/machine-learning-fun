@@ -1,0 +1,9 @@
+{
+    "path" : "~/dev/machine learning/avocado prices",
+    "sortOrder" : [
+        {
+            "ascending" : true,
+            "columnIndex" : 2
+        }
+    ]
+}

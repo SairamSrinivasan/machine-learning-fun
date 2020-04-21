@@ -1,0 +1,337 @@
+---
+title: "avocado_prices"
+output: html_notebook
+---
+
+Contains the code to train multiple models that can predict the price of a single avocado.
+
+Dataset: https://www.kaggle.com/neuromusic/avocado-prices
+
+```{r}
+install.packages("caret")
+install.packages("dplyr")
+install.packages("randomForest")
+install.packages("keras")
+install.packages("tidyr")
+install.packages("tfruns")
+library(caret)
+library(dplyr)
+library(tidyr)
+library(randomForest)
+library(keras)
+library(tfruns)
+```
+
+
+##### Importing the data
+
+```{r}
+#Importing the dataset as well as any other packages that we may need
+avocado <- read.csv("./dataset/avocado.csv")
+str(avocado)
+```
+
+```{r}
+# Take a summary to see the bigger picture of the data that we are working with.
+summary(avocado)
+```
+
+```{r}
+# Audit the data to sniff out all of the potential null values that we might be dealing with...
+sum(is.na(avocado))
+```
+
+```{r}
+# The column with the name of X represents the index of each row and can be ignored as it doesn't correlate with AveragePrice
+# The column with the name "year" is redundant as we already have the date from which we can obtain the year
+# The column date can be split into the day of week and month so we can perform correlations
+columns_to_ignore <- c("X", "year")
+avocado <- avocado[, !(names(avocado) %in% columns_to_ignore)]
+date_columns_to_create <- c("Year", "Month", "Day")
+avocado <- separate(avocado, "Date", date_columns_to_create, sep = "-")
+avocado[, date_columns_to_create] = sapply(avocado[, date_columns_to_create], as.numeric)
+```
+
+```{r}
+str(avocado)
+```
+
+```{r}
+
+# Use the dplyr package to obtain a split between categorical and numerical data so we can plot the data against average price and perform a correlation analysis of the dataset.
+avocado_numeric_columns <- names(dplyr::select_if(avocado, is.numeric))
+avocado_numeric_columns
+avocado_numerical_data <- avocado[, (names(avocado) %in% avocado_numeric_columns)]
+```
+
+```{r}
+str(avocado_numerical_data)
+```
+
+```{r}
+# Starting with the numerical data first, obtain the correlation matrix of all the variables in the data set against AveragePrice. Luckily for us the target column is numerical.
+cor(avocado_numerical_data)
+```
+
+```{r}
+# Plots the average price of each avocado against the type of avocado.
+boxplot(AveragePrice ~ type, data = avocado, main = "Avg Sale Price vs Type", xlab = "Type", ylab = "Average Price")
+```
+
+```{r}
+# Allow us to picture the data shown for the average price of avocados by type.
+tapply(avocado$AveragePrice, avocado$type, summary)
+
+CONVENTIONAL_IQR <- 1.320 - .980
+ORGANIC_IQR <- 1.879 - 1.420
+
+num_outliers_for_conventional <- nrow(subset(avocado, avocado$AveragePrice >= 1.320 + (1.5 * CONVENTIONAL_IQR))) + nrow(subset(avocado, avocado$AveragePrice <= .980 - (1.5 * CONVENTIONAL_IQR)))
+
+num_outliers_for_organic <- nrow(subset(avocado, avocado$AveragePrice >= 1.870 + (1.5 * ORGANIC_IQR))) + nrow(subset(avocado, avocado$AveragePrice <= 1.420 - (1.5 * ORGANIC_IQR)))
+
+# 18.03386% of our data set falls under the category of outliers when looking at the types...
+((num_outliers_for_conventional + num_outliers_for_organic) / nrow(avocado)) * 100;
+```
+
+
+```{r}
+# Allow us to picture the data shown for the average price of avocados by the years.
+tapply(avocado$AveragePrice, avocado$Year, summary)
+
+IQR_2015 <- 1.670 - 1.070
+IQR_2016 <- 1.560 - 1.040
+IQR_2017 <- 1.770 - 1.220
+IQR_2018 <- 1.560 - 1.130
+
+num_outliers_for_2015 <- nrow(subset(avocado, avocado$AveragePrice >= 1.670 + (1.5 * IQR_2015))) + nrow(subset(avocado, avocado$AveragePrice <= 1.070 - (1.5 * IQR_2015)))
+
+num_outliers_for_2016 <- nrow(subset(avocado, avocado$AveragePrice >= 1.560 + (1.5 * IQR_2016))) + nrow(subset(avocado, avocado$AveragePrice <= 1.040 - (1.5 * IQR_2016)))
+
+num_outliers_for_2017 <- nrow(subset(avocado, avocado$AveragePrice >= 1.770 + (1.5 * IQR_2017))) + nrow(subset(avocado, avocado$AveragePrice <= 1.220 - (1.5 * IQR_2017)))
+
+num_outliers_for_2018 <- nrow(subset(avocado, avocado$AveragePrice >= 1.560 + (1.5 * IQR_2018))) + nrow(subset(avocado, avocado$AveragePrice <= 1.130 - (1.5 * IQR_2018)))
+
+# 7.30451% of our data set falls under the category of outliers when looking at the years...
+((num_outliers_for_2015 + num_outliers_for_2016 + num_outliers_for_2017 + num_outliers_for_2018) / nrow(avocado)) * 100;
+```
+
+```{r}
+### Safe a reference to the outcome columns, categorical columns, and columns that we need to embed
+
+outcome_column <- c("AveragePrice")
+
+categorical_columns <- c("region", "type")
+
+categorical_columns_to_embed <- c("region")
+
+### Convert the type column to either 0 or 1 as it's a binary categorical column consisting of "conventional", and "organic"
+avocado$type = ifelse(avocado$type == "conventional", 0, 1)
+
+### Convert the categorical columns to numericcal indices to use for embedding..
+
+avocado[, categorical_columns] = sapply(avocado[, categorical_columns], as.numeric)
+str(avocado)
+```
+
+```{r}
+# Split the overall data into a 90% and 10% split. We will use the entire dataset given the number of observations that we have.
+partitions <- createDataPartition(avocado$AveragePrice, p = 0.9, list = FALSE)
+avocado_train <- avocado[partitions, ]
+avocado_test <- avocado[-partitions, ]
+
+# Split the outcome variables from the training labels.. We will use these to obtain the final result after we tune our hyper parameters.
+avocado_train_labels <- avocado[partitions, !(names(avocado) %in% outcome_column)]
+avocado_train_outcome <- avocado[partitions, (names(avocado) %in% outcome_column)]
+
+avocado_test_labels <- avocado[-partitions, !(names(avocado) %in% outcome_column)]
+avocado_test_outcome <- avocado[-partitions, (names(avocado) %in% outcome_column)]
+
+# Split the training data further for hyper parameter tuning
+partition <- createDataPartition(avocado_train$AveragePrice, p = .9, list = FALSE)
+
+avocado_tune_labels <- avocado_train[partition, !(names(avocado_train) %in% outcome_column)]
+avocado_tune_outcome <- avocado_train[partition, (names(avocado_train) %in% outcome_column)]
+avocado_val_labels <- avocado_train[-partition, !(names(avocado_train) %in% outcome_column)]
+avocado_val_outcome <- avocado_train[-partition, (names(avocado_train) %in% outcome_column)]
+
+```
+
+```{r}
+str(avocado_train)
+str(avocado_test)
+str(avocado_train_labels)
+str(avocado_train_outcome)
+str(avocado_test_labels)
+str(avocado_test_outcome)
+str(avocado_tune_labels)
+str(avocado_tune_outcome)
+str(avocado_val_labels)
+str(avocado_val_outcome)
+```
+
+```{r}
+
+#### Scale all the non-categorical columns for the tuning and validation set
+
+numerical_columns_for_scaling <- names(avocado_tune_labels[, !names(avocado_tune_labels) %in% categorical_columns])
+
+means <- attr(scale(avocado_tune_labels[numerical_columns_for_scaling]), "scaled:center")
+std_dev <- attr(scale(avocado_tune_labels[numerical_columns_for_scaling]), "scaled:scale")
+
+avocado_tune_labels[numerical_columns_for_scaling] <- scale(avocado_tune_labels[numerical_columns_for_scaling])
+avocado_val_labels[numerical_columns_for_scaling] <- scale(avocado_val_labels[numerical_columns_for_scaling], center = means, scale = std_dev)
+
+####  Scale all the non-categorical columns for the train and test set so we can use these after the hyper parameters are obtained
+
+numerical_columns_for_scaling <- names(avocado_train_labels[, !names(avocado_train_labels) %in% categorical_columns])
+
+means <- attr(scale(avocado_train_labels[numerical_columns_for_scaling]), "scaled:center")
+std_dev <- attr(scale(avocado_train_labels[numerical_columns_for_scaling]), "scaled:scale")
+
+avocado_train_labels[numerical_columns_for_scaling] <- scale(avocado_train_labels[numerical_columns_for_scaling])
+avocado_test_labels[numerical_columns_for_scaling] <- scale(avocado_test_labels[numerical_columns_for_scaling], center = means, scale = std_dev)
+
+#### Columns that are not going to be a part of the embedding for the tuning set and the training set
+
+not_embedded_columns_tune <- names(avocado_tune_labels[, !names(avocado_tune_labels) %in% categorical_columns_to_embed])
+not_embedded_columns_train <- names(avocado_train_labels[, !names(avocado_train_labels) %in% categorical_columns_to_embed])
+```
+
+```{r}
+str(avocado_train_labels)
+str(avocado_train_outcome)
+str(avocado_test_labels)
+str(avocado_test_outcome)
+str(avocado_tune_labels)
+str(avocado_tune_outcome)
+str(avocado_val_labels)
+str(avocado_val_outcome)
+```
+
+```{r}
+set.seed(1)
+tuned_flags <- list(
+  nodes_input = c(300, 200, 100),
+  nodes_hidden_one = c(75, 50, 25),
+  nodes_hidden_two = c(20, 10, 5),
+  batch_size = c(100, 200),
+  activation_input = c("relu", "sigmoid", "tanh"),
+  activation_one = c("relu", "sigmoid", "tanh"),
+  activation_two = c("relu", "sigmoid", "tanh"),
+  output_dim = c(1, 5, 10),
+  learning_rate = c(.01, .001, .0001),
+  epochs = c(5, 10, 15)
+)
+runs <- tuning_run("./avocado_hpt.R", flags = tuned_flags, sample = .02)
+runs
+```
+
+```{r}
+#### Get the best model
+minimum_validation_loss <- which.min(runs$metric_val_loss)
+view_run(runs$run_dir[minimum_validation_loss])
+```
+
+
+```{r}
+set.seed(1)
+inp_region <- layer_input(shape = c(1), name="region")
+
+inp_other <- layer_input(shape = c(12), name="other")
+
+embedding_region <- inp_region %>% layer_embedding(input_dim = 54 + 1, output_dim = 1, input_length = 1, name = "region_embedding") %>% layer_flatten()
+
+merged_model <- layer_concatenate(c(embedding_region, inp_other)) %>% layer_dense(units = 200, activation = "relu") %>% layer_dropout(0.5) %>% layer_dense(units = 50, activation = "sigmoid") %>% layer_dropout(0.5) %>% layer_dense(units = 20, activation = "relu") %>% layer_dropout(0.5) %>% layer_dense(units = 1)
+
+nnet_model_with_embedding <- keras::keras_model(inputs = c(inp_region, inp_other), outputs = merged_model)
+
+nnet_model_with_embedding %>% compile(loss = "mse", optimizer = optimizer_adam(lr = .01))
+
+input_train_predictors <- list(as.matrix(avocado_train_labels$region), as.matrix(avocado_train_labels[not_embedded_columns_tune]))
+
+input_test_predictors <- list(as.matrix(avocado_test_labels$region), as.matrix(avocado_test_labels[not_embedded_columns_tune]))
+
+nnet_model <- nnet_model_with_embedding %>% fit(input_train_predictors, avocado_train_outcome, epochs = 15, batch_size = 100, validation_data = list(input_test_predictors, avocado_test_outcome))
+```
+
+```{r}
+rmse <- function(x, y) {
+        return ((mean((x-y) ^ 2)) ^0.5)
+}
+```
+
+```{r}
+predictions <- nnet_model_with_embedding %>% predict(input_test_predictors)
+```
+
+```{r}
+rmse(predictions, avocado_test_outcome)
+```
+
+
+```{r}
+region_embed <- get_layer(nnet_model_with_embedding, "region_embedding")$get_weights()[[1]]
+avocado_train$region <- region_embed[avocado_train$region, ]
+avocado_test$region <- region_embed[avocado_test$region, ]
+```
+
+```{r}
+# Check the modified train and test model that containing character embedding.
+str(avocado_train)
+str(avocado_test)
+```
+
+
+```{r}
+# Going to train a model with regularizations and see how they perform...
+
+# Lasso Regularization (L1)
+set.seed(1)
+lasso <- train(AveragePrice ~ ., data = avocado_train, method = "glmnet", trControl = trainControl("cv", number = 10), tuneGrid = expand.grid(alpha = 1, lambda = 10^seq(-3, 3, length = 100)))
+# Grab the coefficients of the trained model and compute the RMSE
+coef(lasso$finalModel, lasso$bestTune$lambda)
+predictions <- predict(lasso, avocado_test)
+RMSE(predictions, avocado_test$AveragePrice)
+```
+
+```{r}
+# Ridge Regularization (L2): 
+set.seed(1)
+ridge <- train(AveragePrice ~ ., data = avocado_train, method = "glmnet" ,trControl = trainControl("cv", number = 10), tuneGrid = expand.grid(alpha = 0, lambda = 10^seq(-3, 3, length = 100)))
+predictions <- predict(ridge, avocado_test)
+RMSE(predictions, avocado_test$AveragePrice)
+```
+
+```{r}
+# Elastic Net Regularization (L2/L1): 
+set.seed(1)
+elnet <- train(AveragePrice ~ ., data = avocado_train, method = "glmnet", trControl = trainControl("cv", number = 10), tuneGrid = expand.grid(alpha = seq(0, 1, length = 10), lambda = 10^seq(-3, 3, length = 100)))
+predictions <- predict(elnet, avocado_test)
+RMSE(predictions, avocado_test$AveragePrice)
+```
+
+```{r}
+# Train a GBM Model
+gbm <- train(AveragePrice ~ ., data = avocado_train, preProc = "nzv", method = "gbm", trControl = trainControl("cv", number = 10))
+gbm_predictions <- predict(gbm, avocado_test)
+RMSE(gbm_predictions, avocado_test$AveragePrice)
+```
+
+```{r}
+# Train a random forest model
+set.seed(1)
+random_forest_model <- randomForest(AveragePrice ~ ., data = avocado_train, ntree = 500)
+rf_predictions <- predict(random_forest_model, avocado_test)
+RMSE(rf_predictions, avocado_test$AveragePrice)
+varImp(random_forest_model)
+```
+
+```{r}
+# Train a simple multiple linear regression model
+
+set.seed(1)
+mlin_reg_model <- train(AveragePrice ~ ., data = avocado_train, method = "lm", trControl = trainControl("cv", number = 10))
+print(mlin_reg_model)
+summary(mlin_reg_model)
+```
+
